@@ -1,0 +1,1 @@
+# angular19-dotnet8-template
