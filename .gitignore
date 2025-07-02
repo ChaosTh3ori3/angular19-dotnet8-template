@@ -76,6 +76,7 @@ nunit-*.xml
 # IDEs and editors
 .idea/*
 backend/.idea/*
+frontend/.idea/*
 !.idea/runConfigurations/
 !.idea/codeStyleSettings.xml
 .project
