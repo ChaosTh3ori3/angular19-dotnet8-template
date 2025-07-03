@@ -52,7 +52,7 @@ app.MapGet("/weatherforecast", async (IMediator mediator, IMapper mapper) =>
         if (!result.Any()) 
             return Results.NoContent();
         
-        var mappedWeatherForecasts = result.Select(mapper.Map<Backend.Models.WeatherForecastEntity>).ToList();
+        var mappedWeatherForecasts = mapper.Map<List<ReadWeatherForecastDto>>(result);
         
         return Results.Ok(mappedWeatherForecasts);
     })
@@ -67,7 +67,7 @@ app.MapPut("/weatherforecast", async (CreateWeatherForecastDto dto, IMediator me
             
             var result = await mediator.Send(new Backend.API.Domain.CreateWeatherForecastCommand(weatherForecastEntity));
             
-            return Results.Created($"/weatherforecast/{result.Id}", mapper.Map<Backend.Models.WeatherForecastEntity>(result));
+            return Results.Created($"/weatherforecast/{result.Id}", mapper.Map<ReadWeatherForecastDto>(result));
         }
         catch (Exception e)
         {
