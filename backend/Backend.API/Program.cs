@@ -1,8 +1,7 @@
-using AutoMapper;
-using Backend.Contracts;
+using Backend.API.Extensions;
 using Backend.Repository;
-using MediatR;
 using Microsoft.EntityFrameworkCore;
+using OpenTelemetry.Resources;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -10,7 +9,21 @@ var builder = WebApplication.CreateBuilder(args);
 // Logger
 Log.Logger = new LoggerConfiguration()
     .Enrich.FromLogContext()
+    .Enrich.WithMachineName()
+    .Enrich.WithEnvironmentName()
+    .Enrich.WithProperty("Application", "Backend.API")
     .WriteTo.Console()
+    // .WriteTo.GrafanaLoki(
+    //     "GrafanaEndpoint",
+    //     new List<LokiLabel>
+    //     {
+    //         new() { Key = "app", Value = "api" },
+    //     },
+    //     credentials: new LokiCredentials
+    //     {
+    //         Login = builder.Configuration.GetSection("LokiConfiguration:Username").Value!,
+    //         Password = builder.Configuration.GetSection("LokiConfiguration:Password").Value!
+    //     })
     .CreateLogger();
 
 builder.Host.UseSerilog();
@@ -30,12 +43,56 @@ builder.Services.AddDbContext<ExampleDbContext>(opt =>
     opt.UseNpgsql(builder.Configuration.GetSection("DatabaseConnectionString").Value);
 });
 
+builder.Services.AddHealthChecks()
+    .AddNpgSql(builder.Configuration.GetSection("DatabaseConnectionString").Value);
+
 // Http
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+builder.Services.AddCors();
+
+// OpenTelemetry
+var openTelemetryBuilder = builder.Services.AddOpenTelemetry();
+
+// Configure OpenTelemetry Resources with the application name
+openTelemetryBuilder.ConfigureResource(resource => resource
+    .AddService(builder.Environment.ApplicationName));
+
+// Add Metrics for ASP.NET Core and our custom metrics and export to Prometheus
+// openTelemetryBuilder.WithMetrics(metrics => metrics
+//     .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(builder.Environment.ApplicationName))
+//     .AddMeter("Vitera.Api", "1.0")
+//     .AddAspNetCoreInstrumentation()
+//     .AddHttpClientInstrumentation()
+//     .AddOtlpExporter(opts =>
+//     {
+//         opts.Endpoint = new Uri("OpenTelemetryCollectorEndpoint");
+//         opts.Protocol = OtlpExportProtocol.HttpProtobuf;
+//         opts.TimeoutMilliseconds = 1000;
+//         opts.Headers = $"Authorization=Basic {Convert.ToBase64String(Encoding.UTF8.GetBytes($"OpenTelCollectorUserName:OpenTelCollectorPassword"))}";
+//     })
+// );
+
 // ### APP ###
 var app = builder.Build();
+
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<ExampleDbContext>();
+
+    // Liste aller noch nicht angewendeten Migrations ermitteln
+    var pending = db.Database.GetPendingMigrations();
+    if (pending.Any())
+    {
+        Log.Information("Wende {Count} ausstehende Migration(en) an: {Migrations}", pending.Count(), pending);
+        db.Database.Migrate();
+    }
+    else
+    {
+        Log.Information("Keine ausstehenden Migrationen.");
+    }
+}
 
 if (app.Environment.IsDevelopment())
 {
@@ -43,42 +100,27 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseRouting();
 app.UseHttpsRedirection();
 
-app.MapGet("/weatherforecast", async (IMediator mediator, IMapper mapper) =>
+app.UseSerilogRequestLogging(options =>
+{
+    // Optional: Customize the message template
+    options.MessageTemplate = "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000} ms";
+    
+    // Enrich the diagnostic context with e.g. User, QueryString, etc.
+    options.EnrichDiagnosticContext = (diagCtx, httpCtx) =>
     {
-        var result = await mediator.Send(new Backend.API.Domain.GetAllWeatherForecastQuery());
-        
-        if (!result.Any()) 
-            return Results.NoContent();
-        
-        var mappedWeatherForecasts = mapper.Map<List<ReadWeatherForecastDto>>(result);
-        
-        return Results.Ok(mappedWeatherForecasts);
-    })
-    .WithName("GetWeatherForecast")
-    .WithOpenApi();
+        diagCtx.Set("RequestHost", httpCtx.Request.Host.Value);
+        diagCtx.Set("UserAgent", httpCtx.Request.Headers["User-Agent"].ToString());
+        diagCtx.Set("ClientIP", httpCtx.Connection.RemoteIpAddress?.ToString());
+    };
+});
 
-app.MapPut("/weatherforecast", async (CreateWeatherForecastDto dto, IMediator mediator, IMapper mapper) =>
-    {
-        try
-        {
-            var weatherForecastEntity = mapper.Map<Backend.Models.WeatherForecastEntity>(dto);
-            
-            var result = await mediator.Send(new Backend.API.Domain.CreateWeatherForecastCommand(weatherForecastEntity));
-            
-            return Results.Created($"/weatherforecast/{result.Id}", mapper.Map<ReadWeatherForecastDto>(result));
-        }
-        catch (Exception e)
-        {
-            return Results.Problem(
-                detail: e.Message,
-                statusCode: StatusCodes.Status500InternalServerError,
-                title: "An error occurred while creating the weather forecast entry."
-            );
-        }
-    })
-    .WithName("CreateWeatherForecast")
-    .WithOpenApi();
+app.MapEndpoints();
 
+app.UseCors(x => x
+    .AllowAnyOrigin()
+    .AllowAnyMethod()
+    .AllowAnyHeader()); // allow credentials
 app.Run();
