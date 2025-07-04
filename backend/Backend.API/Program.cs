@@ -123,5 +123,4 @@ app.UseCors(x => x
     .AllowAnyOrigin()
     .AllowAnyMethod()
     .AllowAnyHeader()); // allow credentials
-
 app.Run();
